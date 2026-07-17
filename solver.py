@@ -248,16 +248,6 @@ def xi_integral(theta_amp, theta_phase, k, rho_drho_func, omega_domega_func, n_g
         "I": I,
     }
 
-def finite_difference_gradient(func, theta, eps=1e-4):
-    theta = np.asarray(theta, dtype=float)
-    grad = np.zeros_like(theta)
-    for i in range(len(theta)):
-        e_i = np.zeros_like(theta)
-        e_i[i] = 1.0
-        term = func(theta + eps*e_i) - func(theta - eps*e_i)
-        grad[i] = term / (2 * eps)
-    return grad
-
 def loss_C1(theta_1, theta_2, eM, q, rho_drho_func, omega_domega_func, lam=0.0, m_over_e=0.0, w_Q=1.0, w_1=1.0, w_penalty=1000.0, delta_pen=1e-4, n_grid=1001):
     state = xi_integral(theta_1, theta_2, k=1, rho_drho_func=rho_drho_func, omega_domega_func=omega_domega_func, n_grid=n_grid)
     out = transport_values(state, q=q, lam=lam, m_over_e=m_over_e, eM=eM)
@@ -484,3 +474,95 @@ def adam_optimize(parameters, loss_fn, *,
         "optimizer": optimizer,
         "stop_reason": stop_reason,
     }
+
+def evaluate_C1_torch(
+    theta_1,
+    theta_2,
+    *,
+    eM,
+    q,
+    rho_drho_func,
+    omega_domega_func,
+    lam=0.0,
+    m_over_e=0.0,
+    n_grid=4001,
+):
+    """
+    Evaluate the individual C1 residuals using the Torch
+    training discretisation, without constructing gradients.
+    """
+
+    with torch.no_grad():
+        state = xi_integral(
+            theta_amp=theta_1,
+            theta_phase=theta_2,
+            k=1,
+            rho_drho_func=rho_drho_func,
+            omega_domega_func=omega_domega_func,
+            n_grid=n_grid,
+        )
+
+        transport = transport_values(
+            state,
+            q=q,
+            lam=lam,
+            m_over_e=m_over_e,
+            eM=eM,
+        )
+
+        V = state["V"]
+        r = transport["r"]
+        r_V = transport["r_V"]
+        r_U = transport["r_U"]
+        Q = transport["Q"]
+
+        A_U = AU_values(V, r, Q)
+        re_phi_u, im_phi_u = solve_Phi_wave(
+            V=V,
+            rho=state["rho"],
+            drho=state["drho"],
+            omega=state["omega"],
+            domega=state["domega"],
+            r=r,
+            r_U=r_U,
+            r_V=r_V,
+            Q=Q,
+            A_U=A_U,
+            eM=transport["e"],
+            m=transport["m"],
+        )
+
+        charge_residual = transport["charge_residual"]
+
+        matching_loss = (
+            charge_residual**2
+            + re_phi_u**2
+            + im_phi_u**2
+        )
+
+        return {
+            "n_grid": n_grid,
+            "charge_residual": charge_residual.item(),
+            "Re_Phi_U_1": re_phi_u.item(),
+            "Im_Phi_U_1": im_phi_u.item(),
+            "matching_loss": matching_loss.item(),
+            "residual_norm": torch.sqrt(
+                matching_loss
+            ).item(),
+            "inf_xi": torch.min(
+                state["xi"]
+            ).item(),
+            "sup_rU": torch.max(
+                r_U
+            ).item(),
+            "phase_winding": (
+                state["omega"][-1]
+                - state["omega"][0]
+            ).item(),
+            "min_domega": torch.min(
+                state["domega"]
+            ).item(),
+            "max_domega": torch.max(
+                state["domega"]
+            ).item(),
+        }
