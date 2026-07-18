@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
+from matplotlib.lines import Line2D
 from scipy.integrate import solve_ivp, simpson, cumulative_simpson
 from scipy.interpolate import CubicSpline, PchipInterpolator
 
@@ -420,6 +421,99 @@ def print_C1_validation(result):
     print(f"  interpolated min E  = {d['interpolated_min_focusing']:+.12e}")
     print(f"  matching tolerance  = {s['match_tol']:.3e}")
     print("=" * 62)
+
+def _style_C1_dashboard_axis(ax):
+    ax.set_facecolor("white")
+    ax.grid(True, color="#cbd5e1", linewidth=0.7, alpha=0.5)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#94a3b8")
+    ax.spines["bottom"].set_color("#94a3b8")
+    ax.tick_params(colors="#475569", labelsize=9)
+    ax.margins(x=0)
+
+def plot_C1_dashboard(result, *, figsize=(15, 8), save=None, show=True):
+    """Compact 2x3 dashboard for inspecting one validated C1 solution."""
+    V = result["V"]
+    d = result["diagnostics"]
+    s = result["settings"]
+    status = "VALID" if d["valid"] else "INVALID"
+    status_color = "#059669" if d["valid"] else "#dc2626"
+    blue, amber, violet = "#2563eb", "#d97706", "#7c3aed"
+
+    fig, axes = plt.subplots(2, 3, figsize=figsize, constrained_layout=True)
+    fig.patch.set_facecolor("#f8fafc")
+    fig.suptitle(rf"C1 validation dashboard  ·  $eM={s['eM']:g}$  ·  {status}", fontsize=16, fontweight="semibold", color=status_color)
+
+    ax = axes[0, 0]
+    ax.plot(V, result["rho"], color=blue, linewidth=2.2, label=r"$\rho$")
+    ax.plot(V, result["Phi"].real, color=amber, linewidth=1.5, linestyle="--", label=r"$\Re\Phi$")
+    ax.plot(V, result["Phi"].imag, color=violet, linewidth=1.5, linestyle=":", label=r"$\Im\Phi$")
+    ax.axhline(0.0, color="#64748b", linewidth=0.8)
+    ax.set_title("Scalar field", loc="left", fontweight="semibold")
+    ax.set_xlabel(r"$V$")
+    ax.set_ylabel("field value")
+    ax.legend(frameon=False, fontsize=9)
+
+    ax = axes[0, 1]
+    ax.plot(V, result["omega"], color=blue, linewidth=2.0, label=r"$\omega$")
+    ax.plot(V, result["domega"], color=amber, linewidth=1.6, linestyle="--", label=r"$\omega'$")
+    ax.plot(V, V, color="#64748b", linewidth=1.0, linestyle=":", label=r"$V$")
+    ax.set_title(rf"Phase  ·  $\Delta\omega={d['phase_winding']:.4g}$", loc="left", fontweight="semibold")
+    ax.set_xlabel(r"$V$")
+    ax.set_ylabel("phase / derivative")
+    ax.legend(frameon=False, fontsize=9)
+
+    ax = axes[0, 2]
+    ax.plot(V, result["xi"], color=blue, linewidth=2.0, label=r"$\xi$")
+    ax.plot(V, result["xip"], color=violet, linewidth=1.6, linestyle="--", label=r"$\xi'$")
+    ax.axhline(s["xi_margin"], color=status_color if not d["xi_ok"] else "#64748b", linewidth=1.0, linestyle=":")
+    ax.set_title(rf"Raychaudhuri  ·  $\min\xi={d['inf_xi']:.2e}$", loc="left", fontweight="semibold")
+    ax.set_xlabel(r"$V$")
+    ax.set_ylabel("geometry")
+    ax.legend(frameon=False, fontsize=9)
+
+    ax = axes[1, 0]
+    ax.plot(V, result["Q"], color=blue, linewidth=2.2, label=r"$Q(V)$")
+    ax.axhline(result["Qtarget"], color=amber, linewidth=1.4, linestyle="--", label=r"$Q_{\rm target}$")
+    ax.set_title(rf"Charge  ·  $\Delta Q={d['charge_residual']:+.2e}$", loc="left", fontweight="semibold")
+    ax.set_xlabel(r"$V$")
+    ax.set_ylabel(r"$Q$")
+    ax.legend(frameon=False, fontsize=9)
+
+    ax = axes[1, 1]
+    rU_limit = -s["rU_margin"]
+    ax.plot(V, result["r_U"], color=violet, linewidth=2.2)
+    ax.axhline(rU_limit, color=status_color if not d["rU_ok"] else "#64748b", linewidth=1.0, linestyle=":", label="admissibility limit")
+    ax.set_title(rf"Ingoing expansion  ·  $\max r_U={d['sup_rU']:.2e}$", loc="left", fontweight="semibold")
+    ax.set_xlabel(r"$V$")
+    ax.set_ylabel(r"$r_U$")
+    ax.legend(frameon=False, fontsize=9)
+
+    ax = axes[1, 2]
+    residual_labels = [r"$\Delta Q$", r"$\Re\Phi_U$", r"$\Im\Phi_U$"]
+    residual_values = np.abs([d["charge_residual"], d["Re_Phi_U_1"], d["Im_Phi_U_1"]])
+    residual_plot_values = np.maximum(residual_values, np.finfo(float).tiny)
+    residual_colors = ["#059669" if value <= s["match_tol"] else "#dc2626" for value in residual_values]
+    bars = ax.bar(residual_labels, residual_plot_values, color=residual_colors, width=0.62)
+    ax.axhline(s["match_tol"], color=amber, linewidth=1.4, linestyle="--", label=rf"tol. $={s['match_tol']:.1e}$")
+    for bar, value in zip(bars, residual_values):
+        ax.annotate(f"{value:.1e}", xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()), xytext=(0, 3), textcoords="offset points", ha="center", va="bottom", fontsize=8, color="#475569")
+    ax.set_yscale("log")
+    ax.set_title(rf"Matching  ·  $\|R\|_2={d['residual_norm']:.2e}$", loc="left", fontweight="semibold")
+    ax.set_ylabel("absolute residual")
+    ax.legend(frameon=False, fontsize=9)
+
+    for ax in axes.flat:
+        _style_C1_dashboard_axis(ax)
+
+    if save is not None:
+        fig.savefig(save, dpi=200, bbox_inches="tight", facecolor=fig.get_facecolor())
+
+    if show:
+        plt.show()
+
+    return fig, axes
     
 def plot_C1_profiles(result, *, figsize=(15, 8), save=None, show=True):
     V = result["V"]
@@ -570,6 +664,152 @@ def plot_C1_residuals(result, *, figsize=(7, 5), save=None, show=True):
         plt.show()
 
     return fig, ax
+
+def _C1_comparison_records(results):
+    records = []
+
+    for item in results:
+        if isinstance(item, dict):
+            validation = item
+            eM = validation.get("settings", {}).get("eM", validation.get("e"))
+        else:
+            validation = getattr(item, "validation", None)
+            eM = getattr(item, "eM", None)
+
+        if validation is None:
+            raise ValueError("Every result must be evaluated before plotting comparisons.")
+
+        if eM is None:
+            raise ValueError("Each validation result must contain an eM value.")
+
+        records.append((float(eM), validation))
+
+    if not records:
+        raise ValueError("At least one validation result is required.")
+
+    return sorted(records, key=lambda record: record[0])
+
+def _C1_panel_values(result, key, component):
+    values = result[key]
+    return getattr(values, component) if component is not None else values
+
+def _C1_comparison_legends(ax, records, colors, series, extra_styles=()):
+    eM_handles = [Line2D([0], [0], color=color, linewidth=2, label=rf"$eM={eM:g}$") for (eM, _), color in zip(records, colors)]
+    style_specs = [(label, linestyle) for _, _, label, linestyle in series] + list(extra_styles)
+
+    if len(style_specs) > 1:
+        style_handles = [Line2D([0], [0], color="black", linestyle=linestyle, label=label) for label, linestyle in style_specs]
+        style_legend = ax.legend(handles=style_handles, loc="best", title="quantity")
+        ax.add_artist(style_legend)
+
+    ax.legend(handles=eM_handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, title=r"coupling")
+
+def plot_C1_comparison_suite(results, *, panels=None, figsize=(9, 5), cmap="viridis", residual_tolerance=1e-6, show=True):
+    """
+    Plot each validator panel separately with all eM values overlaid.
+
+    Parameters
+    ----------
+    results
+        Evaluated C1Result objects or validation dictionaries.
+
+    panels
+        Optional iterable selecting panel names. By default every
+        profile, diagnostic, and residual panel is generated.
+
+    Returns
+    -------
+    figures : dict
+        Maps each panel name to its (figure, axis) pair.
+    """
+    records = _C1_comparison_records(results)
+    colors = plt.get_cmap(cmap)(np.linspace(0.08, 0.92, len(records)))
+
+    panel_specs = {
+        "rho": (r"Amplitude $\rho$", r"$\rho$", (("rho", None, r"$\rho$", "-"),), True),
+        "omega": (r"Phase $\omega$", r"$\omega$", (("omega", None, r"$\omega$", "-"),), False),
+        "domega": (r"Phase derivative $\omega'$", r"$\omega'$", (("domega", None, r"$\omega'$", "-"),), True),
+        "raychaudhuri": (r"Raychaudhuri variables", "value", (("xi", None, r"$\xi$", "-"), ("xip", None, r"$\xi'$", "--")), True),
+        "charge": (r"Charge transport", r"$Q$", (("Q", None, r"$Q(V)$", "-"),), False),
+        "r_U": (r"Ingoing expansion $r_U$", r"$r_U$", (("r_U", None, r"$r_U$", "-"),), True),
+        "field_derivatives": (r"Field derivatives", "derivative", (("drho", None, r"$\rho'$", "-"), ("domega", None, r"$\omega'$", "--")), True),
+        "charge_density": (r"Charge density $\xi^2\rho^2\omega'$", "charge density", (("charge_density", None, r"$\xi^2\rho^2\omega'$", "-"),), True),
+        "focusing_density": (r"Focusing $\rho'^2+\rho^2\omega'^2$", r"$E(V)$", (("focusing_density", None, r"$E(V)$", "-"),), False),
+        "A_U": (r"Gauge potential $A_U$", r"$A_U$", (("A_U", None, r"$A_U$", "-"),), True),
+        "Phi": (r"Complex scalar field $\Phi$", r"$\Phi$", (("Phi", "real", r"$\Re\Phi$", "-"), ("Phi", "imag", r"$\Im\Phi$", "--")), True),
+        "PhiU_density": (r"Integrand determining $\Phi_U(1)$", "integrand", (("PhiU_density", "real", r"real", "-"), ("PhiU_density", "imag", r"imaginary", "--")), True),
+    }
+
+    available_panels = tuple(panel_specs) + ("residuals",)
+    selected_panels = available_panels if panels is None else tuple(panels)
+    unknown_panels = set(selected_panels) - set(available_panels)
+
+    if unknown_panels:
+        raise ValueError(f"Unknown comparison panels: {sorted(unknown_panels)}")
+
+    figures = {}
+
+    for panel in selected_panels:
+        if panel == "residuals":
+            eM_values = np.asarray([eM for eM, _ in records])
+            residual_specs = (("charge_residual", r"$|Q(1)-Q_{\rm target}|$", "o"), ("Re_Phi_U_1", r"$|\Re\Phi_U(1)|$", "s"), ("Im_Phi_U_1", r"$|\Im\Phi_U(1)|$", "^"))
+            fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
+
+            for key, label, marker in residual_specs:
+                values = np.asarray([abs(result["diagnostics"][key]) for _, result in records])
+                ax.plot(eM_values, np.maximum(values, np.finfo(float).tiny), marker=marker, label=label)
+
+            ax.axhline(residual_tolerance, color="black", linestyle=":", label=rf"tolerance $={residual_tolerance:.1e}$")
+
+            ax.set_yscale("log")
+            ax.set_xlabel(r"$eM$")
+            ax.set_ylabel("absolute residual")
+            ax.set_title("C1 matching residuals across coupling")
+            ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)
+            figures[panel] = (fig, ax)
+
+            if show:
+                plt.show()
+
+            continue
+
+        title, ylabel, series, zero_line = panel_specs[panel]
+        fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
+
+        for (_, result), color in zip(records, colors):
+            for key, component, _, linestyle in series:
+                ax.plot(result["V"], _C1_panel_values(result, key, component), color=color, linestyle=linestyle)
+
+        extra_styles = []
+
+        if panel == "omega":
+            reference_V = records[0][1]["V"]
+            ax.plot(reference_V, reference_V, color="black", linestyle=":")
+            extra_styles.append((r"$V$", ":"))
+
+        if panel == "charge":
+            targets = np.asarray([result["Qtarget"] for _, result in records])
+            if np.allclose(targets, targets[0]):
+                ax.axhline(targets[0], color="black", linestyle=":")
+                extra_styles.append((r"$Q_{\rm target}$", ":"))
+            else:
+                for (_, result), color in zip(records, colors):
+                    ax.axhline(result["Qtarget"], color=color, linestyle=":")
+                extra_styles.append((r"$Q_{\rm target}$", ":"))
+
+        if zero_line:
+            ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+
+        ax.set_xlabel(r"$V$")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        _C1_comparison_legends(ax, records, colors, series, extra_styles)
+        figures[panel] = (fig, ax)
+
+        if show:
+            plt.show()
+
+    return figures
 
 def C1_grid_convergence(theta_amp, theta_phase, *, grids=(2501, 5001, 10001), profile_factor=1, **validator_kwargs):
     """

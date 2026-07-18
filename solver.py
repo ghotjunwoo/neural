@@ -475,6 +475,103 @@ def adam_optimize(parameters, loss_fn, *,
         "stop_reason": stop_reason,
     }
 
+def profile_adam_step(parameters, loss_fn, *, lr=1e-3, betas=(0.9, 0.999), adam_eps=1e-8, weight_decay=0.0, amsgrad=False, row_limit=20):
+    """
+    Profile one complete Adam iteration without changing the parameters.
+
+    Times gradient clearing, the forward calculation, the backward pass,
+    and the Adam update separately. The returned Torch profiler contains
+    a per-operation breakdown for locating the underlying bottleneck.
+    """
+    from time import perf_counter
+    from torch.profiler import profile, record_function, ProfilerActivity
+
+    params = list(parameters)
+
+    if not params:
+        raise ValueError("At least one parameter tensor is required.")
+
+    if any(not parameter.requires_grad for parameter in params):
+        raise ValueError("Every profiled parameter must have requires_grad=True.")
+
+    devices = {parameter.device for parameter in params}
+    if len(devices) != 1:
+        raise ValueError("All parameters must be on the same device.")
+
+    device = params[0].device
+    parameter_snapshots = [parameter.detach().clone() for parameter in params]
+    gradient_snapshots = [None if parameter.grad is None else parameter.grad.detach().clone() for parameter in params]
+    optimizer = torch.optim.Adam(params, lr=lr, betas=betas, eps=adam_eps, weight_decay=weight_decay, amsgrad=amsgrad)
+    activities = [ProfilerActivity.CPU]
+
+    if device.type == "cuda":
+        activities.append(ProfilerActivity.CUDA)
+
+    def synchronize():
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        elif device.type == "mps" and hasattr(torch, "mps"):
+            torch.mps.synchronize()
+
+    stage_times = {}
+
+    try:
+        with profile(activities=activities, record_shapes=True, profile_memory=True) as profiler:
+            synchronize()
+            start = perf_counter()
+            with record_function("adam_zero_grad"):
+                optimizer.zero_grad(set_to_none=True)
+            synchronize()
+            stage_times["zero_grad"] = perf_counter() - start
+
+            start = perf_counter()
+            with record_function("adam_forward"):
+                loss = loss_fn()
+            synchronize()
+            stage_times["forward"] = perf_counter() - start
+
+            if not torch.is_tensor(loss) or loss.ndim != 0 or not loss.requires_grad:
+                raise RuntimeError("loss_fn must return a differentiable scalar Torch tensor.")
+
+            start = perf_counter()
+            with record_function("adam_backward"):
+                loss.backward()
+            synchronize()
+            stage_times["backward"] = perf_counter() - start
+
+            start = perf_counter()
+            with record_function("adam_update"):
+                optimizer.step()
+            synchronize()
+            stage_times["update"] = perf_counter() - start
+
+        loss_value = loss.detach().item()
+        slowest_stage = max(stage_times, key=stage_times.get)
+        total_time = sum(stage_times.values())
+        sort_by = "self_cuda_time_total" if device.type == "cuda" else "self_cpu_time_total"
+        operation_events = [event for event in profiler.key_averages() if not event.key.startswith(("adam_", "Optimizer."))]
+        operation_time = (lambda event: event.self_cuda_time_total) if device.type == "cuda" else (lambda event: event.self_cpu_time_total)
+        slowest_operation = max(operation_events, key=operation_time)
+
+        print(f"loss: {loss_value:.6e}")
+        print("\nAdam stage timings")
+        for stage, elapsed in sorted(stage_times.items(), key=lambda item: item[1], reverse=True):
+            fraction = 100.0 * elapsed / total_time if total_time else 0.0
+            print(f"  {stage:10s} {1e3 * elapsed:10.3f} ms  ({fraction:5.1f}%)")
+        print(f"\nSlowest stage: {slowest_stage}")
+        print(f"Slowest Torch operation: {slowest_operation.key} ({operation_time(slowest_operation) / 1e3:.3f} ms total self time)")
+        print("\nMost expensive Torch operations")
+        print(profiler.key_averages().table(sort_by=sort_by, row_limit=row_limit))
+
+        return {"loss": loss_value, "stage_times": stage_times, "slowest_stage": slowest_stage, "slowest_operation": slowest_operation.key, "profiler": profiler}
+    finally:
+        with torch.no_grad():
+            for parameter, snapshot in zip(params, parameter_snapshots):
+                parameter.copy_(snapshot)
+
+        for parameter, gradient in zip(params, gradient_snapshots):
+            parameter.grad = None if gradient is None else gradient
+
 def evaluate_C1_torch(
     theta_1,
     theta_2,
