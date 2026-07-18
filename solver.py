@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 from bh_horizons import *
 
@@ -145,9 +144,12 @@ def omega_domega(V, theta, k):
     x, dx = tanh_ansatz(V, theta, k=0)
     return kappa * V + x, kappa + dx
     
-def raychaudhuri_rk4(V, E_grid, E_mid):
+def _validate_raychaudhuri_inputs(V, E_grid, E_mid):
     if V.ndim != 1:
         raise ValueError("V must be one-dimensional.")
+
+    if V.numel() < 2:
+        raise ValueError("V must contain at least two grid points.")
 
     if E_grid.shape != V.shape:
         raise ValueError("E_grid must have the same shape as V.")
@@ -155,10 +157,16 @@ def raychaudhuri_rk4(V, E_grid, E_mid):
     if E_mid.shape != V[:-1].shape:
         raise ValueError("E_mid must have length len(V)-1.")
 
+    if torch.any(V[1:] <= V[:-1]):
+        raise ValueError("V must be strictly increasing.")
+
+def _raychaudhuri_rk4_legacy(V, E_grid, E_mid):
+    """Original stage-by-stage differentiable RK4 recurrence."""
+    _validate_raychaudhuri_inputs(V, E_grid, E_mid)
+
     # Data at V=1.
     xi = torch.ones((), dtype=V.dtype, device=V.device)
-    xip = torch.zeros((), dtype=V.dtype,device=V.device,
-    )
+    xip = torch.zeros((), dtype=V.dtype, device=V.device)
 
     # Stored initially in descending-V order.
     xi_reverse = [xi]
@@ -210,6 +218,79 @@ def raychaudhuri_rk4(V, E_grid, E_mid):
 
     return xi_values, xip_values
 
+def _raychaudhuri_transfer_matrices(V, E_grid, E_mid):
+    """Construct the RK4 matrix taking each right-end state to its left end."""
+    _validate_raychaudhuri_inputs(V, E_grid, E_mid)
+
+    h = V[:-1] - V[1:]
+    h2 = h.square()
+    h4 = h2.square()
+    E_left = E_grid[:-1]
+    E_right = E_grid[1:]
+    E_half = E_mid
+
+    M11 = (E_half * E_right * h4 - 8.0 * E_half * h2 - 4.0 * E_right * h2 + 24.0) / 24.0
+    M12 = -h * (E_half * h2 - 6.0) / 6.0
+    M21 = h * (E_left * E_half * h2 - 2.0 * E_left + E_half * E_right * h2 - 8.0 * E_half - 2.0 * E_right) / 12.0
+    M22 = (E_left * E_half * h4 - 4.0 * E_left * h2 - 8.0 * E_half * h2 + 24.0) / 24.0
+
+    row_1 = torch.stack((M11, M12), dim=-1)
+    row_2 = torch.stack((M21, M22), dim=-1)
+    return torch.stack((row_1, row_2), dim=-2)
+
+class _TransferRecurrence(torch.autograd.Function):
+    """Backward state recurrence with a first-derivative-only discrete adjoint."""
+
+    @staticmethod
+    def forward(ctx, M):
+        if M.ndim != 3 or M.shape[-2:] != (2, 2):
+            raise ValueError("M must have shape (N-1, 2, 2).")
+
+        n = M.shape[0] + 1
+        Y = M.new_empty((n, 2))
+        Y[-1, 0] = 1.0
+        Y[-1, 1] = 0.0
+
+        for j in range(n - 2, -1, -1):
+            Y[j] = M[j] @ Y[j + 1]
+
+        ctx.save_for_backward(M, Y)
+        return Y
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_Y):
+        M, Y = ctx.saved_tensors
+        adjoint = grad_Y.clone()
+        grad_M = torch.empty_like(M)
+
+        for j in range(M.shape[0]):
+            grad_M[j] = torch.outer(adjoint[j], Y[j + 1])
+            adjoint[j + 1] += M[j].transpose(0, 1) @ adjoint[j]
+
+        return grad_M
+
+def _raychaudhuri_rk4_transfer_eager(V, E_grid, E_mid):
+    """Eager transfer recurrence retained only for tests and benchmarks."""
+    M = _raychaudhuri_transfer_matrices(V, E_grid, E_mid)
+    states_reverse = [M.new_tensor((1.0, 0.0))]
+
+    for j in range(M.shape[0] - 1, -1, -1):
+        states_reverse.append(M[j] @ states_reverse[-1])
+
+    Y = torch.stack(states_reverse[::-1])
+    return Y[:, 0], Y[:, 1]
+
+def raychaudhuri_rk4_torch(V, E_grid, E_mid):
+    """Solve backwards from (xi, xi')=(1, 0) using RK4 transfer matrices."""
+    M = _raychaudhuri_transfer_matrices(V, E_grid, E_mid)
+    Y = _TransferRecurrence.apply(M)
+    return Y[:, 0], Y[:, 1]
+
+def raychaudhuri_rk4(V, E_grid, E_mid):
+    """Compatibility entry point for the production transfer recurrence."""
+    return raychaudhuri_rk4_torch(V, E_grid, E_mid)
+
 def xi_integral(theta_amp, theta_phase, k, rho_drho_func, omega_domega_func, n_grid=1001):
 
     if theta_amp.dtype != theta_phase.dtype:
@@ -232,7 +313,7 @@ def xi_integral(theta_amp, theta_phase, k, rho_drho_func, omega_domega_func, n_g
     E_grid = drho**2 + (domega * rho)**2
     E_mid = drho_mid**2 + (domega_mid * rho_mid)**2
     
-    xi, xip = raychaudhuri_rk4(V, E_grid, E_mid)
+    xi, xip = raychaudhuri_rk4_torch(V, E_grid, E_mid)
 
     integrand = xi**2 * rho**2 * domega
     I = torch.trapezoid(integrand, x=V, dim=0)
