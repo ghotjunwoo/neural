@@ -566,3 +566,63 @@ def evaluate_C1_torch(
                 state["domega"]
             ).item(),
         }
+
+# def make_theta_phase_init(
+#     theta_amp_init,
+#     p_phase=None,
+#     perturbation=0.0,
+#     seed=0,
+# ):
+#     """
+#     Initialize the direct phase Ansatz
+
+#         omega(V) = exp(log_kappa) * V + x(V)
+    
+#     at, or very close to, fixed phase omega(V)=V.
+
+#     Parameter ordering:
+#         [log_kappa, a0, a, w, b]
+#     """
+#     theta_amp_init = np.asarray(
+#         theta_amp_init,
+#         dtype=np.float64,
+#     )
+
+#     if (theta_amp_init.size - 1) % 3 != 0:
+#         raise ValueError(
+#             "theta_amp_init must have length 1 + 3*p."
+#         )
+
+#     p_amp = (theta_amp_init.size - 1) // 3
+#     p = p_amp if p_phase is None else int(p_phase)
+
+#     if p < 1:
+#         raise ValueError("p_phase must be positive.")
+
+#     # Tanh transition centres distributed across the interval.
+#     centres = np.linspace(0.15, 0.85, p)
+
+#     # Moderate slopes: neither almost linear nor excessively sharp.
+#     widths = np.linspace(4.0, 12.0, p)
+
+#     # w_j V + b_j = 0 at V = centre_j.
+#     biases = -widths * centres
+
+#     rng = np.random.default_rng(seed)
+
+#     # Zero gives exactly omega=V.
+#     # A tiny value such as 1e-4 gives a small symmetry-breaking seed.
+#     a0 = perturbation * rng.normal()
+#     a = perturbation * rng.normal(size=p)
+
+#     theta_phase_init = np.concatenate([
+#         np.array([0.0]),  # log_kappa=0, hence kappa=1
+#         np.array([a0]),
+#         a,
+#         widths,
+#         biases,
+#     ])
+
+#     assert theta_phase_init.size == 3 * p + 2
+
+#     return theta_phase_init

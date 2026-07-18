@@ -28,69 +28,29 @@ def _call_ansatz(func, V, theta, k, backend, device="cpu"):
         backend="numpy"
     """
     if backend == "torch":
-        V_t = torch.as_tensor(
-            V,
-            dtype=torch.float64,
-            device=device,
-        )
-
-        theta_t = torch.as_tensor(
-            theta,
-            dtype=torch.float64,
-            device=device,
-        )
+        V_t = torch.as_tensor(V, dtype=torch.float64, device=device)
+        theta_t = torch.as_tensor(theta, dtype=torch.float64, device=device)
 
         with torch.no_grad():
             try:
-                value, derivative = func(
-                    V_t,
-                    theta_t,
-                    k=k,
-                )
+                value, derivative = func(V_t, theta_t, k=k)
             except TypeError:
-                value, derivative = func(
-                    V_t,
-                    theta_t,
-                )
+                value, derivative = func(V_t, theta_t)
 
-        return (
-            _to_numpy_1d(value),
-            _to_numpy_1d(derivative),
-        )
+        return (_to_numpy_1d(value), _to_numpy_1d(derivative))
 
     if backend == "numpy":
         try:
-            value, derivative = func(
-                V,
-                theta,
-                k=k,
-            )
+            value, derivative = func(V, theta, k=k)
         except TypeError:
-            value, derivative = func(
-                V,
-                theta,
-            )
+            value, derivative = func(V, theta)
 
-        return (
-            _to_numpy_1d(value),
-            _to_numpy_1d(derivative),
-        )
+        return (_to_numpy_1d(value), _to_numpy_1d(derivative))
 
-    raise ValueError(
-        "backend must be either 'torch' or 'numpy'."
-    )
+    raise ValueError("backend must be either 'torch' or 'numpy'.")
 
 
-def evaluate_ansatz_chunked(
-    func,
-    V,
-    theta,
-    k,
-    *,
-    backend="torch",
-    chunk_size=2048,
-    device="cpu",
-):
+def evaluate_ansatz_chunked(func, V, theta, k, *, backend="torch", chunk_size=2048, device="cpu"):
     """
     Evaluate an Ansatz in chunks.
 
@@ -106,63 +66,24 @@ def evaluate_ansatz_chunked(
     for start in range(0, V.size, chunk_size):
         stop = min(start + chunk_size, V.size)
 
-        value, derivative = _call_ansatz(
-            func=func,
-            V=V[start:stop],
-            theta=theta,
-            k=k,
-            backend=backend,
-            device=device,
-        )
+        value, derivative = _call_ansatz(func=func, V=V[start:stop], theta=theta, k=k, backend=backend, device=device)
 
         values.append(value)
         derivatives.append(derivative)
 
-    return (
-        np.concatenate(values),
-        np.concatenate(derivatives),
-    )
+    return np.concatenate(values), np.concatenate(derivatives)
 
 
 def cumulative_simpson_zero(y, x):
     """Cumulative Simpson integral with value zero at x[0]."""
-    return cumulative_simpson(
-        y,
-        x=x,
-        initial=0.0,
-    )
+    return cumulative_simpson(y, x=x, initial=0.0)
 
 
 # ============================================================
 # Accurate C1 validator
 # ============================================================
 
-def validate_C1_scipy(
-    theta_amp,
-    theta_phase,
-    *,
-    eM,
-    q,
-    rho_drho_func,
-    omega_domega_func,
-    rplus_and_Qtarget_func,
-    lam=0.0,
-    m_over_e=0.0,
-    k=1,
-    n_grid=10001,
-    n_profile=None,
-    rtol=1e-11,
-    atol=1e-13,
-    max_step=2e-3,
-    interpolation="cubic",
-    ansatz_backend="torch",
-    ansatz_device="cpu",
-    chunk_size=2048,
-    match_tol=1e-7,
-    xi_margin=0.0,
-    rU_margin=0.0,
-    denominator_tol=1e-13,
-):
+def validate_C1(theta_amp, theta_phase, *, eM, q, rho_drho_func, omega_domega_func, rplus_and_Qtarget_func, lam=0.0, m_over_e=0.0, k=1, n_grid=10001, n_profile=None, rtol=1e-11, atol=1e-13, max_step=2e-3, interpolation="cubic", ansatz_backend="torch", ansatz_device="cpu", chunk_size=2048, match_tol=1e-7, xi_margin=0.0, rU_margin=0.0, denominator_tol=1e-13):
     """
     Strict SciPy validation of a candidate C1 gluing solution.
 
@@ -202,9 +123,7 @@ def validate_C1_scipy(
     theta_phase = _to_numpy_1d(theta_phase)
 
     if n_grid < 3 or n_grid % 2 == 0:
-        raise ValueError(
-            "n_grid must be an odd integer at least 3."
-        )
+        raise ValueError("n_grid must be an odd integer at least 3.")
 
     if n_profile is None:
         n_profile = n_grid
@@ -219,97 +138,41 @@ def validate_C1_scipy(
     # Evaluate the scalar-field Ansätze
     # --------------------------------------------------------
 
-    rho, drho = evaluate_ansatz_chunked(
-        rho_drho_func,
-        V,
-        theta_amp,
-        k,
-        backend=ansatz_backend,
-        chunk_size=chunk_size,
-        device=ansatz_device,
-    )
+    rho, drho = evaluate_ansatz_chunked(rho_drho_func, V, theta_amp, k, backend=ansatz_backend, chunk_size=chunk_size, device=ansatz_device)
 
-    omega, domega = evaluate_ansatz_chunked(
-        omega_domega_func,
-        V,
-        theta_phase,
-        k,
-        backend=ansatz_backend,
-        chunk_size=chunk_size,
-        device=ansatz_device,
-    )
+    omega, domega = evaluate_ansatz_chunked(omega_domega_func, V, theta_phase, k, backend=ansatz_backend, chunk_size=chunk_size, device=ansatz_device)
 
     if n_profile == n_grid:
         rho_profile = rho
         drho_profile = drho
         domega_profile = domega
     else:
-        rho_profile, drho_profile = evaluate_ansatz_chunked(
-            rho_drho_func,
-            V_profile,
-            theta_amp,
-            k,
-            backend=ansatz_backend,
-            chunk_size=chunk_size,
-            device=ansatz_device,
-        )
+        rho_profile, drho_profile = evaluate_ansatz_chunked(rho_drho_func, V_profile, theta_amp, k, backend=ansatz_backend, chunk_size=chunk_size, device=ansatz_device)
 
-        _, domega_profile = evaluate_ansatz_chunked(
-            omega_domega_func,
-            V_profile,
-            theta_phase,
-            k,
-            backend=ansatz_backend,
-            chunk_size=chunk_size,
-            device=ansatz_device,
-        )
+        _, domega_profile = evaluate_ansatz_chunked(omega_domega_func, V_profile, theta_phase, k, backend=ansatz_backend, chunk_size=chunk_size, device=ansatz_device)
 
-    focusing_profile = (
-        drho_profile**2
-        + rho_profile**2 * domega_profile**2
-    )
+    focusing_profile = drho_profile**2 + rho_profile**2 * domega_profile**2
 
     if not np.all(np.isfinite(focusing_profile)):
-        raise FloatingPointError(
-            "The focusing coefficient contains non-finite values."
-        )
+        raise FloatingPointError("The focusing coefficient contains non-finite values.")
 
     # --------------------------------------------------------
     # Interpolate E(V) for the adaptive ODE solver
     # --------------------------------------------------------
 
     if interpolation == "cubic":
-        focusing_interp = CubicSpline(
-            V_profile,
-            focusing_profile,
-            extrapolate=False,
-        )
+        focusing_interp = CubicSpline(V_profile, focusing_profile, extrapolate=False)
     elif interpolation == "pchip":
-        focusing_interp = PchipInterpolator(
-            V_profile,
-            focusing_profile,
-            extrapolate=False,
-        )
+        focusing_interp = PchipInterpolator(V_profile, focusing_profile, extrapolate=False)
     else:
-        raise ValueError(
-            "interpolation must be 'cubic' or 'pchip'."
-        )
+        raise ValueError("interpolation must be 'cubic' or 'pchip'.")
 
-    profile_midpoints = 0.5 * (
-        V_profile[:-1] + V_profile[1:]
-    )
+    profile_midpoints = 0.5 * (V_profile[:-1] + V_profile[1:])
 
-    interpolated_min = float(
-        np.min(focusing_interp(profile_midpoints))
-    )
+    interpolated_min = float(np.min(focusing_interp(profile_midpoints)))
 
     if interpolated_min < -1e-10:
-        warnings.warn(
-            "The interpolated focusing coefficient becomes "
-            f"negative: min={interpolated_min:.3e}. "
-            "Increase n_profile or use interpolation='pchip'.",
-            RuntimeWarning,
-        )
+        warnings.warn("The interpolated focusing coefficient becomes " f"negative: min={interpolated_min:.3e}. " "Increase n_profile or use interpolation='pchip'.", RuntimeWarning)
 
     # --------------------------------------------------------
     # Adaptive Raychaudhuri solve
@@ -345,59 +208,36 @@ def validate_C1_scipy(
     sol = solve_ivp(**solve_kwargs)
 
     if not sol.success:
-        raise RuntimeError(
-            "Raychaudhuri solve failed: "
-            + sol.message
-        )
+        raise RuntimeError("Raychaudhuri solve failed: " + sol.message)
 
     xi, xip = sol.sol(V)
 
     if not np.all(np.isfinite(xi)):
-        raise FloatingPointError(
-            "The Raychaudhuri solution contains non-finite xi."
-        )
+        raise FloatingPointError("The Raychaudhuri solution contains non-finite xi.")
 
     if not np.all(np.isfinite(xip)):
-        raise FloatingPointError(
-            "The Raychaudhuri solution contains non-finite xi'."
-        )
+        raise FloatingPointError("The Raychaudhuri solution contains non-finite xi'.")
 
     # --------------------------------------------------------
     # Charge transport
     # --------------------------------------------------------
 
-    r_plus, Qtarget = rplus_and_Qtarget_func(
-        q,
-        lam,
-    )
+    r_plus, Qtarget = rplus_and_Qtarget_func(q, lam)
 
     r_plus = float(r_plus)
     Qtarget = float(Qtarget)
     e = float(eM)
     m = float(m_over_e * e)
 
-    charge_density = (
-        xi**2
-        * rho**2
-        * domega
-    )
+    charge_density = xi**2 * rho**2 * domega
 
-    cumulative_I = cumulative_simpson_zero(
-        charge_density,
-        V,
-    )
+    cumulative_I = cumulative_simpson_zero(charge_density, V)
 
     I_theta = float(cumulative_I[-1])
 
-    Q = (
-        e
-        * r_plus**2
-        * cumulative_I
-    )
+    Q = e * r_plus**2 * cumulative_I
 
-    charge_residual = float(
-        Q[-1] - Qtarget
-    )
+    charge_residual = float(Q[-1] - Qtarget)
 
     # --------------------------------------------------------
     # Geometry and r_U transport
@@ -407,33 +247,16 @@ def validate_C1_scipy(
     r_V = r_plus * xip
 
     if np.min(np.abs(r)) <= denominator_tol:
-        raise FloatingPointError(
-            "r becomes too close to zero during validation."
-        )
+        raise FloatingPointError("r becomes too close to zero during validation.")
 
     if abs(r_V[0]) <= denominator_tol:
-        raise FloatingPointError(
-            "r_V(0) is too close to zero to determine r_U(0)."
-        )
+        raise FloatingPointError("r_V(0) is too close to zero to determine r_U(0).")
 
-    rU0 = (
-        lam * r[0]**2 / 3.0 - 1.0
-    ) / (4.0 * r_V[0])
+    rU0 = (lam * r[0]**2 / 3.0 - 1.0) / (4.0 * r_V[0])
 
-    rU_density = (
-        -0.25
-        + Q**2 / (4.0 * r**2)
-        + lam * r**2 / 4.0
-        + m**2 * r**2 * rho**2 / 4.0
-    )
+    rU_density = -0.25 + Q**2 / (4.0 * r**2) + lam * r**2 / 4.0 + m**2 * r**2 * rho**2 / 4.0
 
-    r_times_rU = (
-        r[0] * rU0
-        + cumulative_simpson_zero(
-            rU_density,
-            V,
-        )
-    )
+    r_times_rU = r[0] * rU0 + cumulative_simpson_zero(rU_density, V)
 
     r_U = r_times_rU / r
 
@@ -443,10 +266,7 @@ def validate_C1_scipy(
 
     AU_density = -Q / (2.0 * r**2)
 
-    A_U = cumulative_simpson_zero(
-        AU_density,
-        V,
-    )
+    A_U = cumulative_simpson_zero(AU_density, V)
 
     # --------------------------------------------------------
     # Scalar wave transport and C1 endpoint residual
@@ -456,26 +276,11 @@ def validate_C1_scipy(
 
     Phi = rho * phase
 
-    Phi_V = (
-        drho
-        - 1j * rho * domega
-    ) * phase
+    Phi_V = (drho - 1j * rho * domega) * phase
 
-    PhiU_density = (
-        -r_U * Phi_V
-        + 1j * e * Q * Phi / (4.0 * r)
-        - 1j * e * A_U * r_V * Phi
-        - 1j * e * A_U * r * Phi_V
-        - 0.25 * m**2 * r * Phi
-    )
+    PhiU_density = -r_U * Phi_V + 1j * e * Q * Phi / (4.0 * r) - 1j * e * A_U * r_V * Phi - 1j * e * A_U * r * Phi_V - 0.25 * m**2 * r * Phi
 
-    Phi_U_1 = (
-        simpson(
-            PhiU_density,
-            x=V,
-        )
-        / r[-1]
-    )
+    Phi_U_1 = simpson(PhiU_density, x=V) / r[-1]
 
     re_Phi_U_1 = float(Phi_U_1.real)
     im_Phi_U_1 = float(Phi_U_1.imag)
@@ -484,10 +289,7 @@ def validate_C1_scipy(
     # Diagnostics
     # --------------------------------------------------------
 
-    focusing_density = (
-        drho**2
-        + rho**2 * domega**2
-    )
+    focusing_density = drho**2 + rho**2 * domega**2
 
     residual_vector = np.array([
         charge_residual,
@@ -495,42 +297,22 @@ def validate_C1_scipy(
         im_Phi_U_1,
     ])
 
-    residual_norm = float(
-        np.linalg.norm(residual_vector)
-    )
+    residual_norm = float(np.linalg.norm(residual_vector))
 
-    max_residual = float(
-        np.max(np.abs(residual_vector))
-    )
+    max_residual = float(np.max(np.abs(residual_vector)))
 
     inf_xi = float(np.min(xi))
     sup_rU = float(np.max(r_U))
 
-    finite = bool(
-        np.all(np.isfinite(residual_vector))
-        and np.all(np.isfinite(r_U))
-        and np.all(np.isfinite(Q))
-        and np.all(np.isfinite(A_U))
-    )
+    finite = bool(np.all(np.isfinite(residual_vector)) and np.all(np.isfinite(r_U)) and np.all(np.isfinite(Q)) and np.all(np.isfinite(A_U)))
 
-    matching_ok = bool(
-        max_residual <= match_tol
-    )
+    matching_ok = bool(max_residual <= match_tol)
 
-    xi_ok = bool(
-        inf_xi > xi_margin
-    )
+    xi_ok = bool(inf_xi > xi_margin)
 
-    rU_ok = bool(
-        sup_rU < -rU_margin
-    )
+    rU_ok = bool(sup_rU < -rU_margin)
 
-    valid = bool(
-        finite
-        and matching_ok
-        and xi_ok
-        and rU_ok
-    )
+    valid = bool(finite and matching_ok and xi_ok and rU_ok)
 
     diagnostics = {
         "charge_residual": charge_residual,
@@ -541,9 +323,7 @@ def validate_C1_scipy(
         "inf_xi": inf_xi,
         "sup_rU": sup_rU,
         "I_theta": I_theta,
-        "phase_winding": float(
-            omega[-1] - omega[0]
-        ),
+        "phase_winding": float(omega[-1] - omega[0]),
         "min_domega": float(np.min(domega)),
         "max_domega": float(np.max(domega)),
         "min_r": float(np.min(r)),
@@ -616,93 +396,36 @@ def print_C1_validation(result):
     print("=" * 62)
 
     print("\nMatching residuals")
-    print(
-        f"  Q(1)-Q_target       = "
-        f"{d['charge_residual']:+.12e}"
-    )
-    print(
-        f"  Re Phi_U(1)         = "
-        f"{d['Re_Phi_U_1']:+.12e}"
-    )
-    print(
-        f"  Im Phi_U(1)         = "
-        f"{d['Im_Phi_U_1']:+.12e}"
-    )
-    print(
-        f"  residual L2 norm    = "
-        f"{d['residual_norm']:.12e}"
-    )
-    print(
-        f"  largest residual    = "
-        f"{d['max_residual']:.12e}"
-    )
+    print(f"  Q(1)-Q_target       = {d['charge_residual']:+.12e}")
+    print(f"  Re Phi_U(1)         = {d['Re_Phi_U_1']:+.12e}")
+    print(f"  Im Phi_U(1)         = {d['Im_Phi_U_1']:+.12e}")
+    print(f"  residual L2 norm    = {d['residual_norm']:.12e}")
+    print(f"  largest residual    = {d['max_residual']:.12e}")
 
     print("\nAdmissibility")
-    print(
-        f"  inf xi              = "
-        f"{d['inf_xi']:+.12e}"
-    )
-    print(
-        f"  sup r_U             = "
-        f"{d['sup_rU']:+.12e}"
-    )
-    print(
-        f"  xi condition        = {d['xi_ok']}"
-    )
-    print(
-        f"  r_U condition       = {d['rU_ok']}"
-    )
+    print(f"  inf xi              = {d['inf_xi']:+.12e}")
+    print(f"  sup r_U             = {d['sup_rU']:+.12e}")
+    print(f"  xi condition        = {d['xi_ok']}")
+    print(f"  r_U condition       = {d['rU_ok']}")
 
     print("\nPhase")
-    print(
-        f"  omega(1)-omega(0)   = "
-        f"{d['phase_winding']:+.12e}"
-    )
-    print(
-        f"  min omega'          = "
-        f"{d['min_domega']:+.12e}"
-    )
-    print(
-        f"  max omega'          = "
-        f"{d['max_domega']:+.12e}"
-    )
+    print(f"  omega(1)-omega(0)   = {d['phase_winding']:+.12e}")
+    print(f"  min omega'          = {d['min_domega']:+.12e}")
+    print(f"  max omega'          = {d['max_domega']:+.12e}")
 
     print("\nNumerics")
-    print(
-        f"  grid points         = {s['n_grid']}"
-    )
-    print(
-        f"  profile points      = {s['n_profile']}"
-    )
-    print(
-        f"  DOP853 evaluations  = {d['ode_nfev']}"
-    )
-    print(
-        f"  interpolated min E  = "
-        f"{d['interpolated_min_focusing']:+.12e}"
-    )
-    print(
-        f"  matching tolerance  = "
-        f"{s['match_tol']:.3e}"
-    )
+    print(f"  grid points         = {s['n_grid']}")
+    print(f"  profile points      = {s['n_profile']}")
+    print(f"  DOP853 evaluations  = {d['ode_nfev']}")
+    print(f"  interpolated min E  = {d['interpolated_min_focusing']:+.12e}")
+    print(f"  matching tolerance  = {s['match_tol']:.3e}")
     print("=" * 62)
     
-def plot_C1_profiles(
-    result,
-    *,
-    figsize=(15, 8),
-    save=None,
-    show=True,
-):
+def plot_C1_profiles(result, *, figsize=(15, 8), save=None, show=True):
     V = result["V"]
     d = result["diagnostics"]
 
-    fig, axes = plt.subplots(
-        2,
-        3,
-        figsize=figsize,
-        constrained_layout=True,
-    )
+    fig, axes = plt.subplots(2, 3, figsize=figsize, constrained_layout=True)
 
     ax = axes[0, 0]
     ax.plot(V, result["rho"])
@@ -714,9 +437,7 @@ def plot_C1_profiles(
     ax = axes[0, 1]
     ax.plot(V, result["omega"], label=r"$\omega$")
     ax.plot(V, V, linestyle="--", label=r"$V$")
-    ax.set_title(
-        rf"Phase, winding={d['phase_winding']:.6g}"
-    )
+    ax.set_title(rf"Phase, winding={d['phase_winding']:.6g}")
     ax.set_xlabel(r"$V$")
     ax.set_ylabel(r"$\omega$")
     ax.legend()
@@ -724,11 +445,7 @@ def plot_C1_profiles(
     ax = axes[0, 2]
     ax.plot(V, result["domega"])
     ax.axhline(0.0, linewidth=0.8)
-    ax.set_title(
-        rf"$\omega'$: "
-        rf"[{d['min_domega']:.3g}, "
-        rf"{d['max_domega']:.3g}]"
-    )
+    ax.set_title(rf"$\omega'$: [{d['min_domega']:.3g}, {d['max_domega']:.3g}]")
     ax.set_xlabel(r"$V$")
     ax.set_ylabel(r"$\omega'$")
 
@@ -736,24 +453,14 @@ def plot_C1_profiles(
     ax.plot(V, result["xi"], label=r"$\xi$")
     ax.plot(V, result["xip"], label=r"$\xi'$")
     ax.axhline(0.0, linewidth=0.8)
-    ax.set_title(
-        rf"Raychaudhuri, "
-        rf"$\inf\xi={d['inf_xi']:.3e}$"
-    )
+    ax.set_title(rf"Raychaudhuri, $\inf\xi={d['inf_xi']:.3e}$")
     ax.set_xlabel(r"$V$")
     ax.legend()
 
     ax = axes[1, 1]
     ax.plot(V, result["Q"], label=r"$Q(V)$")
-    ax.axhline(
-        result["Qtarget"],
-        linestyle="--",
-        label=r"$Q_{\rm target}$",
-    )
-    ax.set_title(
-        rf"Charge residual="
-        rf"{d['charge_residual']:+.3e}"
-    )
+    ax.axhline(result["Qtarget"], linestyle="--", label=r"$Q_{\rm target}$")
+    ax.set_title(rf"Charge residual={d['charge_residual']:+.3e}")
     ax.set_xlabel(r"$V$")
     ax.set_ylabel(r"$Q$")
     ax.legend()
@@ -761,40 +468,22 @@ def plot_C1_profiles(
     ax = axes[1, 2]
     ax.plot(V, result["r_U"])
     ax.axhline(0.0, linewidth=0.8)
-    ax.set_title(
-        rf"$r_U$, "
-        rf"$\sup r_U={d['sup_rU']:.3e}$"
-    )
+    ax.set_title(rf"$r_U$, $\sup r_U={d['sup_rU']:.3e}$")
     ax.set_xlabel(r"$V$")
     ax.set_ylabel(r"$r_U$")
 
     if save is not None:
-        fig.savefig(
-            save,
-            dpi=200,
-            bbox_inches="tight",
-        )
+        fig.savefig(save, dpi=200, bbox_inches="tight")
 
     if show:
         plt.show()
 
     return fig, axes
 
-def plot_C1_diagnostics(
-    result,
-    *,
-    figsize=(15, 8),
-    save=None,
-    show=True,
-):
+def plot_C1_diagnostics(result, *, figsize=(15, 8), save=None, show=True):
     V = result["V"]
 
-    fig, axes = plt.subplots(
-        2,
-        3,
-        figsize=figsize,
-        constrained_layout=True,
-    )
+    fig, axes = plt.subplots(2, 3, figsize=figsize, constrained_layout=True)
 
     ax = axes[0, 0]
     ax.plot(V, result["drho"], label=r"$\rho'$")
@@ -805,26 +494,14 @@ def plot_C1_diagnostics(
     ax.legend()
 
     ax = axes[0, 1]
-    ax.plot(
-        V,
-        result["charge_density"],
-    )
+    ax.plot(V, result["charge_density"])
     ax.axhline(0.0, linewidth=0.8)
-    ax.set_title(
-        r"Charge density "
-        r"$\xi^2\rho^2\omega'$"
-    )
+    ax.set_title(r"Charge density $\xi^2\rho^2\omega'$")
     ax.set_xlabel(r"$V$")
 
     ax = axes[0, 2]
-    ax.plot(
-        V,
-        result["focusing_density"],
-    )
-    ax.set_title(
-        r"Focusing "
-        r"$\rho'^2+\rho^2\omega'^2$"
-    )
+    ax.plot(V, result["focusing_density"])
+    ax.set_title(r"Focusing $\rho'^2+\rho^2\omega'^2$")
     ax.set_xlabel(r"$V$")
 
     ax = axes[1, 0]
@@ -834,58 +511,30 @@ def plot_C1_diagnostics(
     ax.set_xlabel(r"$V$")
 
     ax = axes[1, 1]
-    ax.plot(
-        V,
-        result["Phi"].real,
-        label=r"$\Re\Phi$",
-    )
-    ax.plot(
-        V,
-        result["Phi"].imag,
-        label=r"$\Im\Phi$",
-    )
+    ax.plot(V, result["Phi"].real, label=r"$\Re\Phi$")
+    ax.plot(V, result["Phi"].imag, label=r"$\Im\Phi$")
     ax.axhline(0.0, linewidth=0.8)
     ax.set_title(r"Complex scalar field $\Phi$")
     ax.set_xlabel(r"$V$")
     ax.legend()
 
     ax = axes[1, 2]
-    ax.plot(
-        V,
-        result["PhiU_density"].real,
-        label="real",
-    )
-    ax.plot(
-        V,
-        result["PhiU_density"].imag,
-        label="imaginary",
-    )
+    ax.plot(V, result["PhiU_density"].real, label="real")
+    ax.plot(V, result["PhiU_density"].imag, label="imaginary")
     ax.axhline(0.0, linewidth=0.8)
-    ax.set_title(
-        r"Integrand determining $\Phi_U(1)$"
-    )
+    ax.set_title(r"Integrand determining $\Phi_U(1)$")
     ax.set_xlabel(r"$V$")
     ax.legend()
 
     if save is not None:
-        fig.savefig(
-            save,
-            dpi=200,
-            bbox_inches="tight",
-        )
+        fig.savefig(save, dpi=200, bbox_inches="tight")
 
     if show:
         plt.show()
 
     return fig, axes
 
-def plot_C1_residuals(
-    result,
-    *,
-    figsize=(7, 5),
-    save=None,
-    show=True,
-):
+def plot_C1_residuals(result, *, figsize=(7, 5), save=None, show=True):
     diagnostics = result["diagnostics"]
     tolerance = result["settings"]["match_tol"]
 
@@ -902,22 +551,12 @@ def plot_C1_residuals(
     ])
 
     # Avoid problems displaying an exact zero on a logarithmic axis.
-    values_for_plot = np.maximum(
-        values,
-        np.finfo(float).tiny,
-    )
+    values_for_plot = np.maximum(values, np.finfo(float).tiny)
 
-    fig, ax = plt.subplots(
-        figsize=figsize,
-        constrained_layout=True,
-    )
+    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
 
     ax.bar(labels, values_for_plot)
-    ax.axhline(
-        tolerance,
-        linestyle="--",
-        label=f"tolerance = {tolerance:.1e}",
-    )
+    ax.axhline(tolerance, linestyle="--", label=f"tolerance = {tolerance:.1e}")
 
     ax.set_yscale("log")
     ax.set_ylabel("absolute residual")
@@ -925,25 +564,14 @@ def plot_C1_residuals(
     ax.legend()
 
     if save is not None:
-        fig.savefig(
-            save,
-            dpi=200,
-            bbox_inches="tight",
-        )
+        fig.savefig(save, dpi=200, bbox_inches="tight")
 
     if show:
         plt.show()
 
     return fig, ax
 
-def C1_grid_convergence(
-    theta_amp,
-    theta_phase,
-    *,
-    grids=(2501, 5001, 10001),
-    profile_factor=1,
-    **validator_kwargs,
-):
+def C1_grid_convergence(theta_amp, theta_phase, *, grids=(2501, 5001, 10001), profile_factor=1, **validator_kwargs):
     """
     Run the strict validator at several resolutions.
 
@@ -955,37 +583,16 @@ def C1_grid_convergence(
     """
     results = []
 
-    print(
-        " n_grid    charge residual"
-        "       Re Phi_U"
-        "       Im Phi_U"
-        "       inf xi"
-        "       sup r_U"
-    )
+    print(" n_grid    charge residual       Re Phi_U       Im Phi_U       inf xi       sup r_U")
 
     for n_grid in grids:
-        n_profile = (
-            profile_factor * (n_grid - 1) + 1
-        )
+        n_profile = profile_factor * (n_grid - 1) + 1
 
-        result = validate_C1_scipy(
-            theta_amp=theta_amp,
-            theta_phase=theta_phase,
-            n_grid=n_grid,
-            n_profile=n_profile,
-            **validator_kwargs,
-        )
+        result = validate_C1(theta_amp=theta_amp, theta_phase=theta_phase, n_grid=n_grid, n_profile=n_profile, **validator_kwargs)
 
         d = result["diagnostics"]
         results.append(result)
 
-        print(
-            f"{n_grid:7d}  "
-            f"{d['charge_residual']:+.5e}  "
-            f"{d['Re_Phi_U_1']:+.5e}  "
-            f"{d['Im_Phi_U_1']:+.5e}  "
-            f"{d['inf_xi']:+.5e}  "
-            f"{d['sup_rU']:+.5e}"
-        )
+        print(f"{n_grid:7d}  {d['charge_residual']:+.5e}  {d['Re_Phi_U_1']:+.5e}  {d['Im_Phi_U_1']:+.5e}  {d['inf_xi']:+.5e}  {d['sup_rU']:+.5e}")
 
     return results
